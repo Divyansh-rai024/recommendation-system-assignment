@@ -30,9 +30,6 @@ CORPUS_PICKLE = "corpus.pkl"
 _parse_duration_to_int = qf._parse_duration_to_int
 _split_to_list = qf._split_to_list
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
-model.save('./all-MiniLM-L6-v2')
-
 # ---------- LAZY LOADER ----------
 def load_everything():
     global sbert_model, gemini_model, catalog_df, corpus, corpus_embeddings
