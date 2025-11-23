@@ -3,7 +3,8 @@ pandas
 google-generativeai
 selenium
 numpy
-torch==2.0.1+cpu
+torch==2.9.1
+torchvision==0.24.1
 matplotlib
 requests
 bs4
