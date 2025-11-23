@@ -1,4 +1,4 @@
-# main.py (Lazy Load Version)
+# main.py 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
@@ -30,6 +30,9 @@ CORPUS_PICKLE = "corpus.pkl"
 _parse_duration_to_int = qf._parse_duration_to_int
 _split_to_list = qf._split_to_list
 
+model = SentenceTransformer('all-MiniLM-L6-v2')
+model.save('./all-MiniLM-L6-v2')
+
 # ---------- LAZY LOADER ----------
 def load_everything():
     global sbert_model, gemini_model, catalog_df, corpus, corpus_embeddings
@@ -40,7 +43,7 @@ def load_everything():
     logger.info("Lazy loading SBERT + catalog + embeddings...")
 
     # 1. Load Model
-    sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+    sbert_model = SentenceTransformer("./all-MiniLM-L6-v2")
 
     # 2. Load Catalog
     if not Path(CATALOG_FILE).exists():
