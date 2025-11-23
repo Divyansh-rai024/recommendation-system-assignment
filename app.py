@@ -6,7 +6,7 @@ import requests
 # -----------------------------
 # CONFIG
 # -----------------------------
-BACKEND_URL = "https://<YOUR_BACKEND_URL>.onrender.com"   # CHANGE THIS
+BACKEND_URL = "https://shl-backend-qcg8.onrender.com"
 
 st.set_page_config(page_title="SHL Assessment Recommendation System", layout="centered")
 
