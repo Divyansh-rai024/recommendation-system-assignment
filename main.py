@@ -1,104 +1,100 @@
+# main.py 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import pandas as pd
+from sentence_transformers import SentenceTransformer
 import numpy as np
 import pickle
-import torch
-import os
 from pathlib import Path
+import os
+import torch
 import logging
-from sentence_transformers import SentenceTransformer
 import query_functions as qf
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- FILE PATHS ----------
-CATALOG_FILE = "SHL_catalog.csv"
-EMB_FILE = "corpus_embeddings.npy"
-CORPUS_PICKLE = "corpus.pkl"
-
-# ---------- GLOBALS ----------
+# Globals (start empty)
 sbert_model = None
 gemini_model = None
 catalog_df = None
 corpus = None
 corpus_embeddings = None
 
+CATALOG_FILE = "SHL_catalog.csv"
+EMB_FILE = "corpus_embeddings.npy"
+CORPUS_PICKLE = "corpus.pkl"
+
 _parse_duration_to_int = qf._parse_duration_to_int
 _split_to_list = qf._split_to_list
 
-
-# ============================================================
-#                INITIALIZE EVERYTHING AT STARTUP
-# ============================================================
-@app.on_event("startup")
+# ---------- LAZY LOADER ----------
 def load_everything():
-    global sbert_model, catalog_df, corpus, corpus_embeddings, gemini_model
+    global sbert_model, gemini_model, catalog_df, corpus, corpus_embeddings
 
-    logger.info("🔥 Loading Model & Embeddings...")
+    if sbert_model is not None:
+        return  # Already loaded
 
-    # --------------- SBERT MODEL ----------------
-    model_path = "./all-MiniLM-L6-v2"
-    if not Path(model_path).exists():
-        raise RuntimeError(f"SBERT directory not found: {model_path}")
+    logger.info("Lazy loading SBERT + catalog + embeddings...")
 
-    sbert_model = SentenceTransformer(model_path)
-    logger.info("✅ SBERT loaded")
+    # 1. Load Model
+    sbert_model = SentenceTransformer("./all-MiniLM-L6-v2")
 
-    # --------------- CATALOG ----------------
+    # 2. Load Catalog
     if not Path(CATALOG_FILE).exists():
-        raise RuntimeError("Catalog file SHL_catalog.csv missing")
+        raise FileNotFoundError(f"{CATALOG_FILE} missing")
 
-    df = pd.read_csv(CATALOG_FILE)
-    df["Duration"] = df["Duration"].apply(_parse_duration_to_int)
-    df["Skills"] = df["Skills"].fillna("").astype(str)
-    df["Description"] = df["Description"].fillna("").astype(str)
-    df["Test Type"] = df["Test Type"].fillna("").astype(str)
-    df["Remote Testing Support"] = df["Remote Testing Support"].fillna("").astype(str)
-    df["Adaptive/IRT"] = df["Adaptive/IRT"].fillna("").astype(str)
+    catalog_df_local = pd.read_csv(CATALOG_FILE)
+    catalog_df_local["Duration"] = catalog_df_local["Duration"].apply(_parse_duration_to_int)
+    catalog_df_local["Skills"] = catalog_df_local["Skills"].fillna("").astype(str)
+    catalog_df_local["Description"] = catalog_df_local["Description"].fillna("").astype(str)
+    catalog_df_local["Test Type"] = catalog_df_local["Test Type"].fillna("").astype(str)
+    catalog_df_local["Remote Testing Support"] = catalog_df_local["Remote Testing Support"].fillna("").astype(str)
+    catalog_df_local["Adaptive/IRT"] = catalog_df_local["Adaptive/IRT"].fillna("").astype(str)
 
-    catalog_df = df
-    logger.info("✅ Catalog loaded")
+    corpus_local = catalog_df_local.apply(qf.build_combined_text_from_row, axis=1).tolist()
 
-    # --------------- EMBEDDINGS ----------------
-    if not Path(EMB_FILE).exists() or not Path(CORPUS_PICKLE).exists():
-        raise RuntimeError(
-            "❌ Missing embeddings! Run embed_precompute.py before deploying."
-        )
+    # 3. Load or create embeddings
+    if Path(EMB_FILE).exists() and Path(CORPUS_PICKLE).exists():
+        logger.info("Loading cached embeddings...")
+        corpus_embeddings_local = torch.from_numpy(np.load(EMB_FILE))
+        with open(CORPUS_PICKLE, "rb") as f:
+            corpus_local = pickle.load(f)
+    else:
+        logger.info("Encoding embeddings (first run)...")
+        corpus_embeddings_local = sbert_model.encode(corpus_local, convert_to_tensor=True)
+        np.save(EMB_FILE, corpus_embeddings_local.cpu().numpy())
+        with open(CORPUS_PICKLE, "wb") as f:
+            pickle.dump(corpus_local, f)
 
-    corpus_embeddings = torch.from_numpy(np.load(EMB_FILE))
-    with open(CORPUS_PICKLE, "rb") as f:
-        corpus = pickle.load(f)
+    # Assign globals
+    catalog_df = catalog_df_local
+    corpus = corpus_local
+    corpus_embeddings = corpus_embeddings_local
 
-    logger.info("✅ Corpus + Embeddings loaded")
-
-    # --------------- OPTIONAL GEMINI ---------------
-    api_key = os.getenv("GEMINI_API_KEY")
+    # Gemini (optional)
+    api_key = os.getenv("GEMINI_API_KEY", None)
     if api_key:
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key)
             gemini_model = genai.GenerativeModel("gemini-1.5-pro")
-            logger.info("✅ Gemini loaded")
         except:
             gemini_model = None
-            logger.warning("⚠️ Gemini failed to initialize")
-
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
 class QueryRequest(BaseModel):
     query: str
 
-
 @app.post("/recommend")
 def recommend(req: QueryRequest):
+    load_everything()  # <-- lazy load happens here
+
     df = qf.query_handling_using_LLM_updated(
         req.query,
         sbert_model=sbert_model,
@@ -127,13 +123,12 @@ def recommend(req: QueryRequest):
 
     return {"recommended_assessments": results}
 
-
 class BatchQuery(BaseModel):
     queries: List[str]
 
-
 @app.post("/export_predictions")
 def export_predictions(batch: BatchQuery):
+    load_everything()
 
     rows = []
     for q in batch.queries:
@@ -153,6 +148,6 @@ def export_predictions(batch: BatchQuery):
                     rows.append({"Query": q, "Assessment_url": url})
 
     if not rows:
-        raise HTTPException(status_code=404, detail="No predictions available")
+        raise HTTPException(status_code=404, detail="No predictions")
 
     return {"csv": pd.DataFrame(rows).to_csv(index=False)}
